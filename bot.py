@@ -84,15 +84,15 @@ TONE_OPTIONS: dict[str, dict[str, str]] = {
 LENGTH_OPTIONS: dict[str, dict[str, str]] = {
     "1": {
         "label": "short",
-        "instruction": "Keep the reply concise, around 1 to 3 sentences.",
+        "instruction": "Keep the reply very short, around 1 sentence, or 2 short sentences at most.",
     },
     "2": {
         "label": "medium",
-        "instruction": "Keep the reply moderate in length, around 4 to 7 sentences.",
+        "instruction": "Keep the reply concise, around 1 to 3 sentences.",
     },
     "3": {
         "label": "long",
-        "instruction": "Write a more developed reply with detail and nuance, around 8 to 12 sentences.",
+        "instruction": "Write a more developed reply with some detail and nuance, around 4 to 7 sentences.",
     },
 }
 
