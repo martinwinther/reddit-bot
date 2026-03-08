@@ -275,6 +275,113 @@ def extract_between(pattern: str, content: str) -> str:
     return strip_tags(match.group(1))
 
 
+# --- Added helper functions for improved extraction ---
+def extract_all_between(pattern: str, content: str) -> list[str]:
+    matches = re.findall(pattern, content, flags=re.DOTALL | re.IGNORECASE)
+    return [strip_tags(match) for match in matches if strip_tags(match)]
+
+
+def extract_json_string_field(content: str, field_name: str) -> list[str]:
+    pattern = rf'"{re.escape(field_name)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+    matches = re.findall(pattern, content, flags=re.DOTALL)
+    results: list[str] = []
+
+    for match in matches:
+        try:
+            decoded = bytes(match, "utf-8").decode("unicode_escape")
+        except Exception:
+            decoded = match
+        cleaned = strip_tags(decoded)
+        if cleaned:
+            results.append(cleaned)
+
+    return results
+
+
+def score_body_candidate(text: str) -> int:
+    value = clean_text(text, 5000)
+    lower = value.lower()
+    score = 0
+
+    length = len(value)
+    if 80 <= length <= 4000:
+        score += 40
+    elif 40 <= length <= 6000:
+        score += 20
+
+    bad_phrases = [
+        "reddit - the heart of the internet",
+        "skip to main content",
+        "open menu",
+        "open navigation",
+        "go to reddit home",
+        "get the reddit app",
+        "log in",
+        "create your account",
+        "user agreement",
+        "privacy policy",
+        "accessibility",
+        "reddit, inc.",
+        "all rights reserved",
+        "expand navigation",
+        "collapse navigation",
+        "read more share",
+        "public anyone can view",
+    ]
+    for phrase in bad_phrases:
+        if phrase in lower:
+            score -= 80
+
+    good_signals = [
+        " i ",
+        " i'm ",
+        " i’ve ",
+        " i was ",
+        " i feel ",
+        " my ",
+        " we ",
+        " because ",
+        " but ",
+    ]
+    for signal in good_signals:
+        if signal in f" {lower} ":
+            score += 8
+
+    punctuation_count = sum(value.count(char) for char in ".,!?;:")
+    score += min(punctuation_count * 2, 30)
+
+    word_count = len(value.split())
+    if word_count >= 40:
+        score += 20
+    elif word_count >= 20:
+        score += 10
+
+    return score
+
+
+def pick_best_body_candidate(candidates: list[str]) -> str:
+    cleaned_candidates: list[str] = []
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        cleaned = clean_text(candidate, 5000)
+        normalized = re.sub(r"\s+", " ", cleaned).strip().lower()
+        if not cleaned or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned_candidates.append(cleaned)
+
+    if not cleaned_candidates:
+        return ""
+
+    ranked = sorted(
+        cleaned_candidates,
+        key=lambda item: (score_body_candidate(item), len(item)),
+        reverse=True,
+    )
+    return ranked[0]
+
+
 def clean_text(text: str, limit: int = 4000) -> str:
     value = (text or "").strip()
     if len(value) <= limit:
@@ -289,11 +396,39 @@ def parse_thread_content(url: str, page_html: str) -> ThreadContent:
     if " : " in title:
         title = title.split(" : ")[0].strip()
 
-    body = extract_between(r'<shreddit-post[\\s\\S]*?<div slot="text-body"[^>]*>(.*?)</div>', page_html)
+    body_candidates: list[str] = []
+
+    body_candidates.extend(
+        extract_all_between(
+            r'<div[^>]+slot="text-body"[^>]*>(.*?)</div>',
+            page_html,
+        )
+    )
+    body_candidates.extend(
+        extract_all_between(
+            r'<shreddit-post[\s\S]*?<div[^>]+slot="text-body"[^>]*>(.*?)</div>',
+            page_html,
+        )
+    )
+    body_candidates.extend(extract_json_string_field(page_html, "content"))
+    body_candidates.extend(extract_json_string_field(page_html, "selftext"))
+    body_candidates.extend(extract_json_string_field(page_html, "body"))
+    body_candidates.extend(
+        extract_all_between(
+            r'<meta[^>]+property="og:description"[^>]+content="(.*?)"[^>]*>',
+            page_html,
+        )
+    )
+    body_candidates.extend(
+        extract_all_between(
+            r'<meta[^>]+name="description"[^>]+content="(.*?)"[^>]*>',
+            page_html,
+        )
+    )
+
+    body = pick_best_body_candidate(body_candidates)
     if not body:
-        body = extract_between(r'"content"\s*:\s*"(.*?)"', page_html)
-    if not body:
-        body = strip_tags(page_html)
+        body = clean_text(strip_tags(page_html), 3000)
 
     body = clean_text(body, 3000)
     title = clean_text(title or "Reddit thread", 300)
