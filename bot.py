@@ -53,8 +53,9 @@ MODEL_OPTIONS: dict[str, dict[str, str]] = {
 @dataclass
 class ThreadContent:
     url: str
+    platform: str
     title: str
-    body: str
+    content: str
 
 
 TONE_OPTIONS: dict[str, dict[str, str]] = {
@@ -93,6 +94,11 @@ LENGTH_OPTIONS: dict[str, dict[str, str]] = {
         "label": "long",
         "instruction": "Write a more developed reply with detail and nuance, around 8 to 12 sentences.",
     },
+}
+
+PLATFORM_DISPLAY_NAMES: dict[str, str] = {
+    "reddit": "Reddit",
+    "linkedin": "LinkedIn",
 }
 
 
@@ -159,8 +165,8 @@ def print_setup_intro() -> None:
     message = """
     First-time setup
 
-    This tool does NOT post to Reddit.
-    It reads one Reddit thread URL, drafts one reply, and writes the result to a local HTML file.
+    This tool does NOT post anything.
+    It reads one Reddit or LinkedIn post URL, drafts one reply, and writes the result to a local HTML file.
     """
     print(textwrap.dedent(message).strip())
     print()
@@ -231,18 +237,29 @@ def build_openai_client(config: dict[str, Any]) -> OpenAI:
     raise ValueError(f"Unsupported provider: {provider}")
 
 
-def normalize_reddit_url(url: str) -> str:
+
+def normalize_input_url(url: str) -> str:
     value = url.strip()
     if not value:
-        raise SystemExit("Please provide a Reddit thread URL.")
+        raise SystemExit("Please provide a supported post URL.")
     if not value.startswith("http://") and not value.startswith("https://"):
         value = f"https://{value}"
-
-    parsed = urlparse(value)
-    if "reddit.com" not in parsed.netloc and "redd.it" not in parsed.netloc:
-        raise SystemExit("Please provide a valid Reddit thread URL.")
-
     return value
+
+
+
+def detect_platform(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+
+    if "reddit.com" in host or "redd.it" in host:
+        return "reddit"
+    if "linkedin.com" in host:
+        return "linkedin"
+
+    raise SystemExit(
+        "Unsupported URL. Please provide a Reddit or LinkedIn post URL."
+    )
 
 
 def fetch_thread_html(url: str) -> str:
@@ -389,13 +406,44 @@ def clean_text(text: str, limit: int = 4000) -> str:
     return value[: limit - 3] + "..."
 
 
-def parse_thread_content(url: str, page_html: str) -> ThreadContent:
-    title = extract_between(r"<title>(.*?)</title>", page_html)
-    if title.endswith(" : r/"):
-        title = title[:-5].strip()
-    if " : " in title:
-        title = title.split(" : ")[0].strip()
 
+
+# --- Platform-generic parsing and helpers ---
+def clean_title_text(title: str, platform: str) -> str:
+    value = clean_text(title or "Post", 300)
+    lower = value.lower()
+
+    if platform == "reddit":
+        separators = [" : r/", " : "]
+        for separator in separators:
+            if separator in value:
+                value = value.split(separator)[0].strip()
+                break
+    elif platform == "x":
+        for separator in [" / X", " on X", " / Twitter", " on Twitter"]:
+            if separator.lower() in lower:
+                value = value[: lower.index(separator.lower())].strip()
+                break
+    elif platform == "linkedin":
+        for separator in [" | LinkedIn", " on LinkedIn"]:
+            if separator.lower() in lower:
+                value = value[: lower.index(separator.lower())].strip()
+                break
+
+    return clean_text(value or "Post", 300)
+
+
+
+def extract_meta_content(page_html: str, property_name: str) -> list[str]:
+    return extract_all_between(
+        rf'<meta[^>]+(?:property|name)="{re.escape(property_name)}"[^>]+content="(.*?)"[^>]*>',
+        page_html,
+    )
+
+
+
+def parse_reddit_content(url: str, page_html: str) -> ThreadContent:
+    title = extract_between(r"<title>(.*?)</title>", page_html)
     body_candidates: list[str] = []
 
     body_candidates.extend(
@@ -413,26 +461,60 @@ def parse_thread_content(url: str, page_html: str) -> ThreadContent:
     body_candidates.extend(extract_json_string_field(page_html, "content"))
     body_candidates.extend(extract_json_string_field(page_html, "selftext"))
     body_candidates.extend(extract_json_string_field(page_html, "body"))
-    body_candidates.extend(
-        extract_all_between(
-            r'<meta[^>]+property="og:description"[^>]+content="(.*?)"[^>]*>',
-            page_html,
-        )
-    )
-    body_candidates.extend(
-        extract_all_between(
-            r'<meta[^>]+name="description"[^>]+content="(.*?)"[^>]*>',
-            page_html,
-        )
-    )
+    body_candidates.extend(extract_meta_content(page_html, "og:description"))
+    body_candidates.extend(extract_meta_content(page_html, "description"))
 
     body = pick_best_body_candidate(body_candidates)
     if not body:
         body = clean_text(strip_tags(page_html), 3000)
 
-    body = clean_text(body, 3000)
-    title = clean_text(title or "Reddit thread", 300)
-    return ThreadContent(url=url, title=title, body=body)
+    return ThreadContent(
+        url=url,
+        platform="reddit",
+        title=clean_title_text(title, "reddit"),
+        content=clean_text(body, 3000),
+    )
+
+
+
+
+
+
+def parse_linkedin_content(url: str, page_html: str) -> ThreadContent:
+    title = extract_between(r"<title>(.*?)</title>", page_html)
+    content_candidates: list[str] = []
+
+    content_candidates.extend(extract_meta_content(page_html, "og:description"))
+    content_candidates.extend(extract_meta_content(page_html, "description"))
+    content_candidates.extend(extract_json_string_field(page_html, "description"))
+    content_candidates.extend(extract_json_string_field(page_html, "text"))
+    content_candidates.extend(
+        extract_all_between(
+            r'<div[^>]+class="[^"]*break-words[^"]*"[^>]*>(.*?)</div>',
+            page_html,
+        )
+    )
+
+    content = pick_best_body_candidate(content_candidates)
+    if not content:
+        content = clean_text(strip_tags(page_html), 2500)
+
+    return ThreadContent(
+        url=url,
+        platform="linkedin",
+        title=clean_title_text(title, "linkedin"),
+        content=clean_text(content, 2500),
+    )
+
+
+
+def parse_post_content(url: str, page_html: str, platform: str) -> ThreadContent:
+    if platform == "reddit":
+        return parse_reddit_content(url, page_html)
+    if platform == "linkedin":
+        return parse_linkedin_content(url, page_html)
+
+    raise SystemExit(f"Unsupported platform: {platform}")
 
 
 def draft_reply(
@@ -442,16 +524,17 @@ def draft_reply(
     tone_option: dict[str, str],
     length_option: dict[str, str],
 ) -> str:
+    platform_name = PLATFORM_DISPLAY_NAMES.get(thread.platform, thread.platform.title())
     prompt = f"""
-You are drafting one Reddit reply for HUMAN REVIEW ONLY.
+You are drafting one social media reply for HUMAN REVIEW ONLY.
 
-Write a natural reply to this Reddit thread.
+Write a natural reply to this {platform_name} post.
 Do not mention being an AI.
 Do not be promotional.
-Do not ask for upvotes or engagement.
+Do not ask for likes, upvotes, reposts, or engagement.
 Do not use emojis unless the requested tone would clearly justify it, and even then use them sparingly.
-Match normal Reddit tone.
-If the thread lacks detail, acknowledge that gently.
+Match normal {platform_name} tone.
+If the post lacks detail, acknowledge that gently.
 Output only the reply text.
 
 Tone requirement:
@@ -460,11 +543,11 @@ Tone requirement:
 Length requirement:
 {length_option['instruction']}
 
-Thread title:
+Post title:
 {thread.title}
 
-Thread body:
-{thread.body or '[No body text found]'}
+Post content:
+{thread.content or '[No post content found]'}
 """.strip()
 
     response = client.responses.create(model=config["model"], input=prompt)
@@ -478,7 +561,7 @@ def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Reddit Reply Draft</title>
+  <title>Reply Draft</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {{
@@ -519,13 +602,14 @@ def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label
 </head>
 <body>
   <div class="card">
-    <h1>Reddit Reply Draft</h1>
-    <p><a href="{html.escape(thread.url)}" target="_blank" rel="noopener noreferrer">Open thread</a></p>
+    <h1>Reply Draft</h1>
+    <p><a href="{html.escape(thread.url)}" target="_blank" rel="noopener noreferrer">Open post</a></p>
     <h2>{html.escape(thread.title)}</h2>
+    <p><strong>Platform:</strong> {html.escape(PLATFORM_DISPLAY_NAMES.get(thread.platform, thread.platform.title()))}</p>
     <p><strong>Tone:</strong> {html.escape(tone_label.title())}</p>
     <p><strong>Length:</strong> {html.escape(length_label.title())}</p>
-    <h3>Thread body</h3>
-    <pre>{html.escape(thread.body or '[No body text found]')}</pre>
+    <h3>Post content</h3>
+    <pre>{html.escape(thread.content or '[No post content found]')}</pre>
     <h3>Draft reply</h3>
     <pre>{html.escape(draft)}</pre>
     <p class="footer">Generated at {html.escape(generated_at)}</p>
@@ -542,7 +626,8 @@ Usage:
   python bot.py --reset-config
 
 What it does:
-  - Prompts for a Reddit thread URL
+  - Prompts for a Reddit or LinkedIn post URL
+  - Detects the platform automatically
   - Reads the page content
   - Generates one draft reply with your chosen AI provider
   - Saves the result to a local HTML file
@@ -565,10 +650,11 @@ def main() -> None:
     validate_config(config)
     client = build_openai_client(config)
 
-    thread_url = normalize_reddit_url(prompt_nonempty("Enter Reddit thread URL"))
-    print("Loading thread...")
-    page_html = fetch_thread_html(thread_url)
-    thread = parse_thread_content(thread_url, page_html)
+    input_url = normalize_input_url(prompt_nonempty("Enter Reddit or LinkedIn post URL"))
+    platform = detect_platform(input_url)
+    print("Loading post...")
+    page_html = fetch_thread_html(input_url)
+    thread = parse_post_content(input_url, page_html, platform)
 
     print()
     tone_option = prompt_choice("Choose reply tone:", TONE_OPTIONS, "1")
