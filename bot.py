@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import html
@@ -58,6 +57,45 @@ class ThreadContent:
     body: str
 
 
+TONE_OPTIONS: dict[str, dict[str, str]] = {
+    "1": {
+        "label": "helpful",
+        "instruction": "Be warm, practical, constructive, and sincerely helpful.",
+    },
+    "2": {
+        "label": "funny",
+        "instruction": "Use light humor and wit, but keep it natural, friendly, and not cringe or forced.",
+    },
+    "3": {
+        "label": "socratic questioning",
+        "instruction": "Reply mainly through thoughtful questions that help the other person reflect, clarify, or refine their thinking.",
+    },
+    "4": {
+        "label": "serious",
+        "instruction": "Use a grounded, direct, thoughtful, and no-nonsense tone.",
+    },
+    "5": {
+        "label": "provocative",
+        "instruction": "Be bold, sharp, and slightly challenging, but do not be abusive, hateful, or needlessly inflammatory.",
+    },
+}
+
+LENGTH_OPTIONS: dict[str, dict[str, str]] = {
+    "1": {
+        "label": "short",
+        "instruction": "Keep the reply concise, around 1 to 3 sentences.",
+    },
+    "2": {
+        "label": "medium",
+        "instruction": "Keep the reply moderate in length, around 4 to 7 sentences.",
+    },
+    "3": {
+        "label": "long",
+        "instruction": "Write a more developed reply with detail and nuance, around 8 to 12 sentences.",
+    },
+}
+
+
 def configure_warnings() -> None:
     if NotOpenSSLWarning is not None:
         warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
@@ -101,6 +139,20 @@ def prompt_nonempty(prompt: str, default: str | None = None) -> str:
         if default is not None:
             return default
         print("Please enter a value.")
+
+
+def prompt_choice(prompt: str, options: dict[str, dict[str, str]], default_key: str) -> dict[str, str]:
+    print(prompt)
+    for key, option in options.items():
+        print(f"{key}. {option['label'].title()}")
+
+    while True:
+        choice = input(f"Enter number [{default_key}]: ").strip()
+        if not choice:
+            choice = default_key
+        if choice in options:
+            return options[choice]
+        print("Invalid choice. Please try again.")
 
 
 def print_setup_intro() -> None:
@@ -248,18 +300,30 @@ def parse_thread_content(url: str, page_html: str) -> ThreadContent:
     return ThreadContent(url=url, title=title, body=body)
 
 
-def draft_reply(client: OpenAI, config: dict[str, Any], thread: ThreadContent) -> str:
+def draft_reply(
+    client: OpenAI,
+    config: dict[str, Any],
+    thread: ThreadContent,
+    tone_option: dict[str, str],
+    length_option: dict[str, str],
+) -> str:
     prompt = f"""
 You are drafting one Reddit reply for HUMAN REVIEW ONLY.
 
-Write a helpful, natural reply to this Reddit thread.
+Write a natural reply to this Reddit thread.
 Do not mention being an AI.
 Do not be promotional.
 Do not ask for upvotes or engagement.
-Do not use emojis.
+Do not use emojis unless the requested tone would clearly justify it, and even then use them sparingly.
 Match normal Reddit tone.
 If the thread lacks detail, acknowledge that gently.
 Output only the reply text.
+
+Tone requirement:
+{tone_option['instruction']}
+
+Length requirement:
+{length_option['instruction']}
 
 Thread title:
 {thread.title}
@@ -272,7 +336,7 @@ Thread body:
     return response.output_text.strip()
 
 
-def render_html(thread: ThreadContent, draft: str) -> str:
+def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label: str) -> str:
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"""
 <!doctype html>
@@ -323,6 +387,8 @@ def render_html(thread: ThreadContent, draft: str) -> str:
     <h1>Reddit Reply Draft</h1>
     <p><a href="{html.escape(thread.url)}" target="_blank" rel="noopener noreferrer">Open thread</a></p>
     <h2>{html.escape(thread.title)}</h2>
+    <p><strong>Tone:</strong> {html.escape(tone_label.title())}</p>
+    <p><strong>Length:</strong> {html.escape(length_label.title())}</p>
     <h3>Thread body</h3>
     <pre>{html.escape(thread.body or '[No body text found]')}</pre>
     <h3>Draft reply</h3>
@@ -369,13 +435,18 @@ def main() -> None:
     page_html = fetch_thread_html(thread_url)
     thread = parse_thread_content(thread_url, page_html)
 
+    print()
+    tone_option = prompt_choice("Choose reply tone:", TONE_OPTIONS, "1")
+    print()
+    length_option = prompt_choice("Choose reply length:", LENGTH_OPTIONS, "2")
+
     print("Drafting reply...")
     try:
-        draft = draft_reply(client, config, thread)
+        draft = draft_reply(client, config, thread, tone_option, length_option)
     except Exception as exc:
         raise SystemExit(f"Draft generation failed: {exc}") from exc
 
-    html_output = render_html(thread, draft)
+    html_output = render_html(thread, draft, tone_option["label"], length_option["label"])
     DASHBOARD_PATH.write_text(html_output, encoding="utf-8")
 
     print(f"\nDone. Open this file in your browser:\n{DASHBOARD_PATH}")
