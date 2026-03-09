@@ -6,6 +6,7 @@ import re
 import sys
 import textwrap
 import warnings
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from getpass import GetPassWarning, getpass
@@ -619,6 +620,19 @@ def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label
 """.strip()
 
 
+# --- Clipboard copy helper ---
+def copy_to_clipboard(text: str) -> None:
+    try:
+        subprocess.run(
+            ["pbcopy"],
+            input=text,
+            text=True,
+            check=True,
+        )
+    except Exception as exc:
+        print(f"Warning: could not copy reply to clipboard: {exc}")
+
+
 def print_help() -> None:
     help_text = f"""
 Usage:
@@ -669,8 +683,8 @@ def main() -> None:
 
     html_output = render_html(thread, draft, tone_option["label"], length_option["label"])
     DASHBOARD_PATH.write_text(html_output, encoding="utf-8")
-
-    print(f"\nDone. Open this file in your browser:\n{DASHBOARD_PATH}")
+    copy_to_clipboard(draft)
+    print(f"\nDone. The reply has been copied to your clipboard. Open this file in your browser:\n{DASHBOARD_PATH}")
 
 
 if __name__ == "__main__":
