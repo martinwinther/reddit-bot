@@ -555,14 +555,40 @@ Post content:
     return response.output_text.strip()
 
 
-def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label: str) -> str:
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# --- Persistent dashboard history functions ---
+def render_history_entry(
+    thread: ThreadContent,
+    draft: str,
+    tone_label: str,
+    length_label: str,
+    generated_at: str,
+) -> str:
+    return f"""
+  <article class="card">
+    <p><a href="{html.escape(thread.url)}" target="_blank" rel="noopener noreferrer">Open post</a></p>
+    <h2>{html.escape(thread.title)}</h2>
+    <p><strong>Platform:</strong> {html.escape(PLATFORM_DISPLAY_NAMES.get(thread.platform, thread.platform.title()))}</p>
+    <p><strong>Tone:</strong> {html.escape(tone_label.title())}</p>
+    <p><strong>Length:</strong> {html.escape(length_label.title())}</p>
+    <h3>Post content</h3>
+    <pre>{html.escape(thread.content or '[No post content found]')}</pre>
+    <h3>Draft reply</h3>
+    <pre>{html.escape(draft)}</pre>
+    <p class="footer">Generated at {html.escape(generated_at)}</p>
+  </article>
+""".strip()
+
+
+
+def build_dashboard_document(history_entries_html: str) -> str:
     return f"""
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Reply Draft</title>
+  <title>Reply Draft History</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {{
@@ -578,6 +604,7 @@ def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label
       border-radius: 12px;
       padding: 20px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+      margin-bottom: 20px;
     }}
     a {{
       color: #0969da;
@@ -602,22 +629,46 @@ def render_html(thread: ThreadContent, draft: str, tone_label: str, length_label
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Reply Draft</h1>
-    <p><a href="{html.escape(thread.url)}" target="_blank" rel="noopener noreferrer">Open post</a></p>
-    <h2>{html.escape(thread.title)}</h2>
-    <p><strong>Platform:</strong> {html.escape(PLATFORM_DISPLAY_NAMES.get(thread.platform, thread.platform.title()))}</p>
-    <p><strong>Tone:</strong> {html.escape(tone_label.title())}</p>
-    <p><strong>Length:</strong> {html.escape(length_label.title())}</p>
-    <h3>Post content</h3>
-    <pre>{html.escape(thread.content or '[No post content found]')}</pre>
-    <h3>Draft reply</h3>
-    <pre>{html.escape(draft)}</pre>
-    <p class="footer">Generated at {html.escape(generated_at)}</p>
-  </div>
+  <h1>Reply Draft History</h1>
+  {history_entries_html}
 </body>
 </html>
 """.strip()
+
+
+
+def update_dashboard_history(
+    thread: ThreadContent,
+    draft: str,
+    tone_label: str,
+    length_label: str,
+) -> None:
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_entry = render_history_entry(
+        thread=thread,
+        draft=draft,
+        tone_label=tone_label,
+        length_label=length_label,
+        generated_at=generated_at,
+    )
+
+    existing_entries = ""
+    if DASHBOARD_PATH.exists():
+        existing_html = DASHBOARD_PATH.read_text(encoding="utf-8")
+        body_match = re.search(r"<body>(.*)</body>", existing_html, flags=re.DOTALL | re.IGNORECASE)
+        if body_match:
+            body_html = body_match.group(1)
+            body_html = re.sub(r"<h1>.*?</h1>", "", body_html, count=1, flags=re.DOTALL | re.IGNORECASE).strip()
+            existing_entries = body_html
+
+    combined_entries = new_entry
+    if existing_entries:
+        combined_entries = f"{new_entry}\n\n{existing_entries}"
+
+    DASHBOARD_PATH.write_text(
+        build_dashboard_document(combined_entries),
+        encoding="utf-8",
+    )
 
 
 # --- Clipboard copy helper ---
@@ -681,10 +732,9 @@ def main() -> None:
     except Exception as exc:
         raise SystemExit(f"Draft generation failed: {exc}") from exc
 
-    html_output = render_html(thread, draft, tone_option["label"], length_option["label"])
-    DASHBOARD_PATH.write_text(html_output, encoding="utf-8")
+    update_dashboard_history(thread, draft, tone_option["label"], length_option["label"])
     copy_to_clipboard(draft)
-    print(f"\nDone. The reply has been copied to your clipboard. Open this file in your browser:\n{DASHBOARD_PATH}")
+    print(f"\nDone. The reply has been copied to your clipboard. The dashboard history has been updated:\n{DASHBOARD_PATH}")
 
 
 if __name__ == "__main__":
