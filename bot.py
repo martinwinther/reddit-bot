@@ -684,10 +684,20 @@ def copy_to_clipboard(text: str) -> None:
         print(f"Warning: could not copy reply to clipboard: {exc}")
 
 
+# --- Clear dashboard history helper ---
+def clear_dashboard_history() -> None:
+    if DASHBOARD_PATH.exists():
+        DASHBOARD_PATH.unlink()
+        print(f"Cleared dashboard history: {DASHBOARD_PATH}")
+    else:
+        print("No existing dashboard history to clear.")
+
+
 def print_help() -> None:
     help_text = f"""
 Usage:
   python bot.py
+  python bot.py --clear-history
   python bot.py --reset-config
 
 What it does:
@@ -696,6 +706,7 @@ What it does:
   - Reads the page content
   - Generates one draft reply with your chosen AI provider
   - Saves the result to a local HTML file
+  - Can clear the saved dashboard history with --clear-history
 
 Files:
   Config:    {CONFIG_PATH}
@@ -711,6 +722,9 @@ def main() -> None:
 
     configure_warnings()
     ensure_app_dir()
+    if "--clear-history" in sys.argv:
+        clear_dashboard_history()
+        return
     config = get_config()
     validate_config(config)
     client = build_openai_client(config)
